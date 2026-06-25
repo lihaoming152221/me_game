@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>3D第三人称俯视射击生存游戏</title>
     <style>
+        /* ... 样式保持不变 ... */
         body {
             margin: 0;
             overflow: hidden;
@@ -183,7 +184,6 @@
         </div>
     </div>
 
-    <!-- 引入 Three.js 核心库和辅助库 -->
     <script type="importmap">
         {
             "imports": {
@@ -195,8 +195,6 @@
 
     <script type="module">
         import * as THREE from 'three';
-        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-        import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 
         // --- 初始化场景、相机、渲染器 ---
         const scene = new THREE.Scene();
@@ -212,9 +210,6 @@
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         document.body.appendChild(renderer.domElement);
-
-        // 辅助CSS2渲染器（用于敌人血条，可选，这里暂不使用，但保留导入）
-        // 但我们用简单方式，不加额外UI
 
         // --- 灯光 ---
         const ambientLight = new THREE.AmbientLight(0x404060);
@@ -266,7 +261,7 @@
             isPlaying: false,
             isGameOver: false,
             score: 0,
-            survivalTime: 0, // 秒
+            survivalTime: 0,
             health: 100,
             maxHealth: 100,
             enemies: [],
@@ -277,7 +272,6 @@
             spawnInterval: 2.5,
             enemySpeed: 2.5,
             lastTimestamp: 0,
-            delta: 0,
         };
 
         // --- DOM 元素 ---
@@ -290,24 +284,25 @@
         const mainActionBtn = document.getElementById('mainActionBtn');
         const resetBtn = document.getElementById('resetBtn');
 
-        // --- 玩家 (第三人称) ---
+        // --- 玩家 (修复方向) ---
         function createPlayer() {
             const group = new THREE.Group();
 
-            // 身体 (胶囊形状: 圆柱+半球)
+            // 身体
             const bodyMat = new THREE.MeshStandardMaterial({ color: 0x44aaff, roughness: 0.4, metalness: 0.1 });
             const body = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, 1.2, 8), bodyMat);
             body.position.y = 0.6;
             body.castShadow = true;
             group.add(body);
 
+            // 头部
             const headMat = new THREE.MeshStandardMaterial({ color: 0xffccaa, roughness: 0.3 });
             const head = new THREE.Mesh(new THREE.SphereGeometry(0.45, 8, 8), headMat);
             head.position.y = 1.4;
             head.castShadow = true;
             group.add(head);
 
-            // 枪 (指示方向)
+            // 枪 (指向Z正方向，即前方)
             const gunMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.7 });
             const gun = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.8), gunMat);
             gun.position.set(0.5, 0.7, 0.8);
@@ -320,7 +315,7 @@
             barrel.position.set(0.5, 0.7, 1.2);
             group.add(barrel);
 
-            // 眼睛 (小点)
+            // 眼睛 (小点) - 朝向Z正方向
             const eyeMat = new THREE.MeshStandardMaterial({ color: 0x000000 });
             const eye1 = new THREE.Mesh(new THREE.SphereGeometry(0.08, 6), eyeMat);
             eye1.position.set(-0.2, 1.5, 0.4);
@@ -349,7 +344,6 @@
             head.castShadow = true;
             group.add(head);
 
-            // 眼睛 (白色)
             const eyeMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
             const eye1 = new THREE.Mesh(new THREE.SphereGeometry(0.1, 6), eyeMat);
             eye1.position.set(-0.15, 1.15, 0.3);
@@ -358,28 +352,27 @@
             eye2.position.set(0.15, 1.15, 0.3);
             group.add(eye2);
 
-            // 随机位置 (在边界内)
             const angle = Math.random() * Math.PI * 2;
             const radius = 8 + Math.random() * 10;
             group.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
             
-            // 随机旋转
             group.rotation.y = Math.random() * Math.PI * 2;
 
-            // 存储生命值 (敌人一枪死)
             return group;
         }
 
         // --- 子弹 ---
         function createBullet(position, direction) {
-            const bulletMat = new THREE.MeshStandardMaterial({ color: 0xffdd44, emissive: 0xff8800 });
+            const bulletMat = new THREE.MeshStandardMaterial({ 
+                color: 0xffdd44, 
+                emissive: 0xff8800,
+                emissiveIntensity: 0.5
+            });
             const bullet = new THREE.Mesh(new THREE.SphereGeometry(0.15, 6), bulletMat);
             bullet.position.copy(position);
             bullet.position.y += 0.6;
             bullet.castShadow = true;
-            // 存储速度方向
             bullet.userData.velocity = direction.clone().multiplyScalar(30);
-            // 生命周期
             bullet.userData.life = 2.5;
             return bullet;
         }
@@ -389,20 +382,18 @@
         scene.add(player);
         state.player = player;
 
-        // 相机跟随 (第三人称俯视)
+        // 相机跟随
         function updateCamera() {
             const pos = player.position;
-            // 俯视角度，固定偏移
             const offset = new THREE.Vector3(0, 14, 14);
             camera.position.copy(pos.clone().add(offset));
             camera.lookAt(pos.x, 0, pos.z);
         }
         updateCamera();
 
-        // --- 事件监听: 键盘鼠标 ---
+        // --- 事件监听 ---
         const keys = { w: false, a: false, s: false, d: false };
         let mouseX = 0, mouseY = 0;
-        let isShooting = false;
 
         document.addEventListener('keydown', (e) => {
             const key = e.key.toLowerCase();
@@ -417,37 +408,38 @@
             if (key === 'w' || key === 'a' || key === 's' || key === 'd') keys[key] = false;
         });
 
-        // 鼠标移动控制视角 (旋转玩家)
+        // 鼠标移动控制视角
         document.addEventListener('mousemove', (e) => {
             if (!state.isPlaying || state.isGameOver) return;
-            // 归一化坐标 -1..1
             mouseX = (e.clientX / window.innerWidth) * 2 - 1;
             mouseY = -(e.clientY / window.innerHeight) * 2 + 1;
-            // 更新玩家朝向 (基于鼠标位置)
-            // 计算水平角度: 鼠标X映射到 -PI ~ PI
-            const angle = mouseX * Math.PI * 0.6; // 限制最大转角
+            // 玩家旋转 - 现在使用鼠标控制
+            const angle = mouseX * Math.PI * 0.6;
             player.rotation.y = angle;
         });
 
         document.addEventListener('mousedown', (e) => {
             if (e.button === 0 && state.isPlaying && !state.isGameOver) {
-                isShooting = true;
                 shoot();
             }
         });
-        document.addEventListener('mouseup', (e) => {
-            if (e.button === 0) isShooting = false;
-        });
 
-        // 射击函数
+        // --- 修复射击方向 ---
         function shoot() {
             if (!state.isPlaying || state.isGameOver) return;
-            // 从玩家位置发射子弹
-            const dir = new THREE.Vector3(0, 0, -1);
-            dir.applyQuaternion(player.quaternion);
-            // 稍微抬高一点
-            const startPos = player.position.clone().add(new THREE.Vector3(0, 0.6, 0));
-            const bullet = createBullet(startPos, dir);
+            
+            // 获取玩家的朝向（Z轴正方向为前方）
+            const forward = new THREE.Vector3(0, 0, 1);
+            forward.applyQuaternion(player.quaternion);
+            forward.normalize();
+            
+            // 子弹起始位置（从枪口位置发射）
+            const startPos = player.position.clone();
+            startPos.y += 0.8;
+            // 稍微向前偏移
+            startPos.add(forward.clone().multiplyScalar(0.8));
+            
+            const bullet = createBullet(startPos, forward);
             scene.add(bullet);
             state.bullets.push(bullet);
         }
@@ -466,7 +458,6 @@
 
             for (let i = state.enemies.length - 1; i >= 0; i--) {
                 const enemy = state.enemies[i];
-                // 向玩家移动
                 const dir = new THREE.Vector3().copy(playerPos).sub(enemy.position);
                 dir.y = 0;
                 const dist = dir.length();
@@ -474,27 +465,21 @@
                     dir.normalize();
                     enemy.position.add(dir.multiplyScalar(speed * delta));
                 }
-                // 旋转朝向玩家
                 const angle = Math.atan2(dir.x, dir.z);
                 enemy.rotation.y = angle;
 
-                // 碰撞检测: 敌人碰到玩家
                 if (dist < 1.2) {
-                    // 扣血
                     state.health -= 15;
                     if (state.health < 0) state.health = 0;
                     updateHealthUI();
-                    // 移除敌人
                     scene.remove(enemy);
                     state.enemies.splice(i, 1);
-                    // 检查是否死亡
                     if (state.health <= 0) {
                         gameOver();
                     }
                     continue;
                 }
 
-                // 敌人与子弹碰撞
                 for (let j = state.bullets.length - 1; j >= 0; j--) {
                     const bullet = state.bullets[j];
                     const bPos = bullet.position;
@@ -502,16 +487,12 @@
                     const dx = bPos.x - ePos.x;
                     const dz = bPos.z - ePos.z;
                     if (dx*dx + dz*dz < 1.0 && Math.abs(bPos.y - ePos.y) < 1.0) {
-                        // 击中
                         scene.remove(bullet);
                         state.bullets.splice(j, 1);
-                        // 移除敌人
                         scene.remove(enemy);
                         state.enemies.splice(i, 1);
-                        // 加分
                         state.score += 1;
                         killDisplay.textContent = state.score;
-                        // 加血
                         state.health = Math.min(state.maxHealth, state.health + 8);
                         updateHealthUI();
                         break;
@@ -525,7 +506,6 @@
                 const bullet = state.bullets[i];
                 bullet.position.add(bullet.userData.velocity.clone().multiplyScalar(delta));
                 bullet.userData.life -= delta;
-                // 边界移除
                 if (bullet.userData.life <= 0 || Math.abs(bullet.position.x) > 22 || Math.abs(bullet.position.z) > 22) {
                     scene.remove(bullet);
                     state.bullets.splice(i, 1);
@@ -557,7 +537,6 @@
         }
 
         function resetGame() {
-            // 清除敌人
             state.enemies.forEach(e => scene.remove(e));
             state.enemies = [];
             state.bullets.forEach(b => scene.remove(b));
@@ -583,7 +562,6 @@
         function startGame() {
             if (state.isGameOver) {
                 resetGame();
-                // 再调一次start
                 setTimeout(() => startGame(), 50);
                 return;
             }
@@ -594,7 +572,6 @@
             overlay.classList.add('hidden');
             mainActionBtn.textContent = '继续游戏';
             mainActionBtn.className = 'btn secondary';
-            // 初始生成几个敌人
             for (let i=0; i<4; i++) spawnEnemy();
         }
 
@@ -603,14 +580,7 @@
             if (state.isGameOver) {
                 resetGame();
                 setTimeout(() => startGame(), 100);
-            } else if (state.isPlaying) {
-                // 暂停? 但我们的设计是继续游戏，实际上点击开始/继续是相同的
-                // 如果正在玩，点击继续不做任何事情，或者我们可以设计暂停，但这里简化为无操作
-                // 但为了体验，如果正在玩，我们显示提示
-                if (state.isPlaying) {
-                    // 但覆盖层隐藏，所以正常
-                }
-            } else {
+            } else if (!state.isPlaying) {
                 startGame();
             }
         });
@@ -635,13 +605,12 @@
             state.lastTimestamp = now;
 
             if (state.isPlaying && !state.isGameOver) {
-                // 更新生存时间
                 state.survivalTime += delta;
                 timerDisplay.textContent = formatTime(state.survivalTime);
 
                 // 玩家移动
                 const moveSpeed = 5.5;
-                const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(player.quaternion);
+                const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(player.quaternion);
                 const right = new THREE.Vector3(1, 0, 0).applyQuaternion(player.quaternion);
                 const moveDir = new THREE.Vector3(0, 0, 0);
                 if (keys.w) moveDir.add(forward);
@@ -651,33 +620,26 @@
                 if (moveDir.length() > 0) {
                     moveDir.normalize().multiplyScalar(moveSpeed * delta);
                     player.position.add(moveDir);
-                    // 边界限制
                     const limit = 18;
                     player.position.x = Math.max(-limit, Math.min(limit, player.position.x));
                     player.position.z = Math.max(-limit, Math.min(limit, player.position.z));
                 }
 
-                // 更新摄像机
                 updateCamera();
 
-                // 生成敌人
                 state.spawnTimer += delta;
                 if (state.spawnTimer >= state.spawnInterval) {
                     state.spawnTimer = 0;
                     spawnEnemy();
-                    // 动态难度
                     if (state.survivalTime > 30) state.spawnInterval = 1.8;
                     if (state.survivalTime > 60) state.spawnInterval = 1.2;
                     if (state.survivalTime > 120) state.spawnInterval = 0.8;
                     state.enemySpeed = 2.5 + state.survivalTime * 0.02;
                 }
 
-                // 更新敌人
                 updateEnemies(delta);
-                // 更新子弹
                 updateBullets(delta);
 
-                // 检查健康
                 if (state.health <= 0) {
                     state.health = 0;
                     updateHealthUI();
@@ -691,9 +653,6 @@
         // 初始状态
         resetGame();
         animate();
-
-        // 额外: 鼠标在游戏外时停止射击
-        document.addEventListener('mouseleave', () => { isShooting = false; });
 
         console.log('🎮 3D第三人称俯视射击生存游戏已启动！');
         console.log('WASD移动 | 鼠标旋转视角 | 左键/空格射击');
