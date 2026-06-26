@@ -159,6 +159,25 @@
             #healthBar { width: 200px; height: 14px; }
             #ui > div { font-size: 14px; padding: 4px 12px; }
         }
+        #fullscreenBtn {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            padding: 8px 18px;
+            font-size: 14px;
+            font-weight: bold;
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 20px;
+            background: rgba(0,0,0,0.5);
+            color: white;
+            cursor: pointer;
+            backdrop-filter: blur(4px);
+            z-index: 10;
+            transition: background 0.2s;
+        }
+        #fullscreenBtn:hover {
+            background: rgba(0,170,255,0.6);
+        }
     </style>
 </head>
 <body>
@@ -168,10 +187,11 @@
         <div>⏱️ 生存时间: <span id="timerDisplay">00:00</span></div>
         <div>🎯 击杀: <span id="killDisplay">0</span></div>
     </div>
+    <button id="fullscreenBtn">全屏</button>
 
     <!-- 血条 -->
     <div id="healthBar"><div id="healthFill" style="width:100%"></div></div>
-    <div id="controlsHint">WASD 移动 | 鼠标瞄准 | 左键射击</div>
+    <div id="controlsHint">WASD 移动 | 空格跳跃 | 鼠标瞄准 | 左键射击</div>
 
     <!-- 覆盖层（开始/继续/结束） -->
     <div id="gameOverlay">
@@ -199,9 +219,9 @@
         // --- 初始化场景、相机、渲染器 ---
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x112233);
-        scene.fog = new THREE.Fog(0x112233, 20, 50);
+        scene.fog = new THREE.Fog(0x112233, 40, 100);
 
-        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
         camera.position.set(0, 18, 18);
         camera.lookAt(0, 0, 0);
 
@@ -216,17 +236,17 @@
         scene.add(ambientLight);
 
         const dirLight = new THREE.DirectionalLight(0xffeedd, 1.5);
-        dirLight.position.set(10, 25, 10);
+        dirLight.position.set(15, 35, 15);
         dirLight.castShadow = true;
-        dirLight.shadow.mapSize.width = 1024;
-        dirLight.shadow.mapSize.height = 1024;
-        const d = 25;
+        dirLight.shadow.mapSize.width = 2048;
+        dirLight.shadow.mapSize.height = 2048;
+        const d = 50;
         dirLight.shadow.camera.left = -d;
         dirLight.shadow.camera.right = d;
         dirLight.shadow.camera.top = d;
         dirLight.shadow.camera.bottom = -d;
         dirLight.shadow.camera.near = 1;
-        dirLight.shadow.camera.far = 40;
+        dirLight.shadow.camera.far = 80;
         scene.add(dirLight);
 
         const fillLight = new THREE.DirectionalLight(0x446688, 0.6);
@@ -234,7 +254,9 @@
         scene.add(fillLight);
 
         // 地面
-        const groundGeo = new THREE.PlaneGeometry(40, 40);
+        const ARENA_SIZE = 80;
+        const HALF = ARENA_SIZE / 2;
+        const groundGeo = new THREE.PlaneGeometry(ARENA_SIZE, ARENA_SIZE);
         const groundMat = new THREE.MeshStandardMaterial({ color: 0x2a4a5a, roughness: 0.8, metalness: 0.1 });
         const ground = new THREE.Mesh(groundGeo, groundMat);
         ground.rotation.x = -Math.PI / 2;
@@ -243,18 +265,149 @@
         scene.add(ground);
 
         // 网格辅助线
-        const gridHelper = new THREE.GridHelper(40, 20, 0x88ccff, 0x336699);
+        const gridHelper = new THREE.GridHelper(ARENA_SIZE, 40, 0x88ccff, 0x336699);
         gridHelper.position.y = -0.4;
         scene.add(gridHelper);
 
         // 边界装饰
         const wallMat = new THREE.MeshStandardMaterial({ color: 0x1a2a3a, transparent: true, opacity: 0.3 });
-        const wallPositions = [[-20, 0, 0], [20, 0, 0], [0, 0, -20], [0, 0, 20]];
+        const wallPositions = [[-HALF, 0, 0], [HALF, 0, 0], [0, 0, -HALF], [0, 0, HALF]];
         wallPositions.forEach(pos => {
-            const wall = new THREE.Mesh(new THREE.BoxGeometry(0.5, 4, 40), wallMat);
+            const isXWall = pos[0] !== 0;
+            const wall = new THREE.Mesh(
+                new THREE.BoxGeometry(isXWall ? 0.5 : ARENA_SIZE, 4, isXWall ? ARENA_SIZE : 0.5),
+                wallMat
+            );
             wall.position.set(pos[0], 1, pos[2]);
             scene.add(wall);
         });
+
+        // --- 障碍物 ---
+        const obstacles = []; // 存储障碍物碰撞数据 {x, z, hw, hd} hw/hd = X/Z方向半宽
+
+        // 障碍物材质
+        const crateMat = new THREE.MeshStandardMaterial({ color: 0x8B6914, roughness: 0.9, metalness: 0.0 });
+        const stoneMat = new THREE.MeshStandardMaterial({ color: 0x667788, roughness: 0.7, metalness: 0.2 });
+        const metalMat = new THREE.MeshStandardMaterial({ color: 0x556677, roughness: 0.3, metalness: 0.8 });
+        const concreteMat = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.85, metalness: 0.05 });
+        const barrelMat = new THREE.MeshStandardMaterial({ color: 0x336633, roughness: 0.6, metalness: 0.3 });
+        const sandbagMat = new THREE.MeshStandardMaterial({ color: 0x9B8B6B, roughness: 0.95, metalness: 0.0 });
+
+        function addObstacle(mesh, cx, cz, hw, hd) {
+            mesh.position.set(cx, mesh.position.y, cz);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            scene.add(mesh);
+            obstacles.push({ x: cx, z: cz, hw: hw, hd: hd });
+        }
+
+        // --- 木箱（小掩体）---
+        function createCrate(x, z, w, h, d) {
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), crateMat);
+            mesh.position.y = h / 2;
+            addObstacle(mesh, x, z, w / 2, d / 2);
+        }
+
+        // --- 石柱 ---
+        function createPillar(x, z, radius, height) {
+            const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, height, 8), stoneMat);
+            mesh.position.y = height / 2;
+            addObstacle(mesh, x, z, radius, radius);
+        }
+
+        // --- 金属掩体墙 ---
+        function createWall(x, z, w, h, d) {
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), metalMat);
+            mesh.position.y = h / 2;
+            addObstacle(mesh, x, z, w / 2, d / 2);
+        }
+
+        // --- 混凝土墩 ---
+        function createBunker(x, z, w, h, d) {
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), concreteMat);
+            mesh.position.y = h / 2;
+            addObstacle(mesh, x, z, w / 2, d / 2);
+        }
+
+        // --- 油桶 ---
+        function createBarrel(x, z) {
+            const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 1.2, 12), barrelMat);
+            mesh.position.y = 0.6;
+            addObstacle(mesh, x, z, 0.5, 0.5);
+        }
+
+        // --- 沙袋堆 ---
+        function createSandbags(x, z) {
+            const group = new THREE.Group();
+            for (let row = 0; row < 3; row++) {
+                for (let col = 0; col < 2 - row % 2; col++) {
+                    const bag = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.4, 0.6), sandbagMat);
+                    bag.position.set(col * 1.3 - (1 - row % 2) * 0.65, row * 0.4 + 0.2, 0);
+                    bag.castShadow = true;
+                    group.add(bag);
+                }
+            }
+            addObstacle(group, x, z, 1.0, 0.6);
+        }
+
+        // --- 放置障碍物 ---
+        // 中心区域：掩体墙和箱子
+        createWall(6, 0, 0.5, 2.5, 5);
+        createWall(-6, 0, 0.5, 2.5, 5);
+        createCrate(0, 6, 1.5, 1.2, 1.5);
+        createCrate(0, -6, 1.5, 1.2, 1.5);
+
+        // 第一圈：石柱和掩体
+        createPillar(15, 15, 0.8, 3.5);
+        createPillar(-15, 15, 0.8, 3.5);
+        createPillar(15, -15, 0.8, 3.5);
+        createPillar(-15, -15, 0.8, 3.5);
+        createBunker(0, 15, 4, 2, 1);
+        createBunker(0, -15, 4, 2, 1);
+        createBunker(15, 0, 1, 2, 4);
+        createBunker(-15, 0, 1, 2, 4);
+
+        // 第二圈：箱子和油桶
+        createCrate(25, 5, 1.5, 1.2, 1.5);
+        createCrate(25, 5 + 1.8, 1.5, 1.2, 1.5);
+        createCrate(-25, -5, 1.5, 1.2, 1.5);
+        createCrate(-25, -5 - 1.8, 1.5, 1.2, 1.5);
+        createBarrel(25, -10);
+        createBarrel(26, -10);
+        createBarrel(-25, 10);
+        createBarrel(-26, 10);
+        createWall(8, 25, 6, 2, 0.5);
+        createWall(-8, -25, 6, 2, 0.5);
+
+        // 第三圈：沙袋和石柱
+        createSandbags(30, 0);
+        createSandbags(-30, 0);
+        createSandbags(0, 30);
+        createSandbags(0, -30);
+        createPillar(25, 25, 0.6, 4);
+        createPillar(-25, -25, 0.6, 4);
+        createPillar(25, -25, 0.6, 4);
+        createPillar(-25, 25, 0.6, 4);
+
+        // 外圈：大型掩体和装饰
+        createBunker(35, 0, 6, 2.5, 1.5);
+        createBunker(-35, 0, 6, 2.5, 1.5);
+        createBunker(0, 35, 1.5, 2.5, 6);
+        createBunker(0, -35, 1.5, 2.5, 6);
+        createBarrel(20, 30);
+        createBarrel(21, 30);
+        createBarrel(-20, -30);
+        createBarrel(-21, -30);
+        createCrate(30, 20, 2, 1.5, 2);
+        createCrate(32, 20, 2, 1.5, 2);
+        createCrate(-30, -20, 2, 1.5, 2);
+        createCrate(-32, -20, 2, 1.5, 2);
+        createWall(20, -30, 0.5, 3, 8);
+        createWall(-20, 30, 0.5, 3, 8);
+        createSandbags(35, 20);
+        createSandbags(-35, -20);
+        createPillar(35, -20, 1, 4.5);
+        createPillar(-35, 20, 1, 4.5);
 
         // --- 游戏状态 ---
         const state = {
@@ -266,12 +419,16 @@
             maxHealth: 100,
             enemies: [],
             bullets: [],
+            healthPacks: [],
+            spawnWarnings: [],
             player: null,
             clock: new THREE.Clock(),
             spawnTimer: 0,
             spawnInterval: 2.5,
             enemySpeed: 2.5,
             lastTimestamp: 0,
+            isJumping: false,
+            jumpVelocity: 0,
         };
 
         // --- DOM 元素 ---
@@ -329,35 +486,100 @@
         }
 
         // --- 敌人 ---
-        function createEnemy() {
+        // type: 'red'(3HP, 普速), 'blue'(2HP, 快速, 瘦), 'purple'(5HP, 普速)
+        function createEnemy(type) {
             const group = new THREE.Group();
-            const color = 0xff5555;
-            const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.5 });
-            const body = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.9, 6), mat);
-            body.position.y = 0.45;
+
+            let bodyColor, headColor, bodyRadius, bodyHeight, headRadius, headY, hp, speedMul, eyeY;
+
+            if (type === 'blue') {
+                bodyColor = 0x4488ff;
+                headColor = 0x2266cc;
+                bodyRadius = 0.35;
+                bodyHeight = 0.7;
+                headRadius = 0.25;
+                headY = 0.75;
+                eyeY = 0.85;
+                hp = 2;
+                speedMul = 1.8;
+            } else if (type === 'purple') {
+                bodyColor = 0xaa44ff;
+                headColor = 0x8822cc;
+                bodyRadius = 0.6;
+                bodyHeight = 1.1;
+                headRadius = 0.4;
+                headY = 1.25;
+                eyeY = 1.35;
+                hp = 5;
+                speedMul = 1.0;
+            } else {
+                bodyColor = 0xff5555;
+                headColor = 0xcc3333;
+                bodyRadius = 0.5;
+                bodyHeight = 0.9;
+                headRadius = 0.35;
+                headY = 1.05;
+                eyeY = 1.15;
+                hp = 3;
+                speedMul = 1.0;
+            }
+
+            const mat = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.5 });
+            const body = new THREE.Mesh(new THREE.CylinderGeometry(bodyRadius, bodyRadius, bodyHeight, 6), mat);
+            body.position.y = bodyHeight / 2;
             body.castShadow = true;
             group.add(body);
 
-            const headMat = new THREE.MeshStandardMaterial({ color: 0xcc3333 });
-            const head = new THREE.Mesh(new THREE.SphereGeometry(0.35, 6), headMat);
-            head.position.y = 1.05;
+            const headMat = new THREE.MeshStandardMaterial({ color: headColor });
+            const head = new THREE.Mesh(new THREE.SphereGeometry(headRadius, 6), headMat);
+            head.position.y = headY;
             head.castShadow = true;
             group.add(head);
 
             const eyeMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
-            const eye1 = new THREE.Mesh(new THREE.SphereGeometry(0.1, 6), eyeMat);
-            eye1.position.set(-0.15, 1.15, 0.3);
+            const eye1 = new THREE.Mesh(new THREE.SphereGeometry(0.08, 6), eyeMat);
+            eye1.position.set(-headRadius * 0.4, eyeY, headRadius * 0.7);
             group.add(eye1);
-            const eye2 = new THREE.Mesh(new THREE.SphereGeometry(0.1, 6), eyeMat);
-            eye2.position.set(0.15, 1.15, 0.3);
+            const eye2 = new THREE.Mesh(new THREE.SphereGeometry(0.08, 6), eyeMat);
+            eye2.position.set(headRadius * 0.4, eyeY, headRadius * 0.7);
             group.add(eye2);
 
-            const angle = Math.random() * Math.PI * 2;
-            const radius = 8 + Math.random() * 10;
-            group.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
-            
-            group.rotation.y = Math.random() * Math.PI * 2;
+            // 血条背景 (Sprite始终面向相机)
+            const hpCanvas = document.createElement('canvas');
+            hpCanvas.width = 128;
+            hpCanvas.height = 16;
+            const hpTexture = new THREE.CanvasTexture(hpCanvas);
+            hpTexture.minFilter = THREE.LinearFilter;
+            const hpSpriteMat = new THREE.SpriteMaterial({ map: hpTexture, depthTest: false });
+            const hpSprite = new THREE.Sprite(hpSpriteMat);
+            hpSprite.position.y = headY + headRadius + 0.5;
+            hpSprite.scale.set(1.6, 0.2, 1);
+            hpSprite.renderOrder = 1000;
+            group.add(hpSprite);
 
+            // 初始绘制血条
+            function drawEnemyHp(current, max) {
+                const ctx = hpCanvas.getContext('2d');
+                ctx.clearRect(0, 0, 128, 16);
+                // 背景
+                ctx.fillStyle = '#333333';
+                ctx.fillRect(0, 0, 128, 16);
+                // 填充
+                const pct = Math.max(0, current / max);
+                if (pct <= 0.33) ctx.fillStyle = '#ffaa00';
+                else if (pct <= 0.66) ctx.fillStyle = '#ff6633';
+                else ctx.fillStyle = '#44ff44';
+                ctx.fillRect(2, 2, 124 * pct, 12);
+                hpTexture.needsUpdate = true;
+            }
+
+            group.position.set(0, 0, 0);
+            group.userData.hp = hp;
+            group.userData.maxHp = hp;
+            group.userData.speedMul = speedMul;
+            group.userData.hpSprite = hpSprite;
+            group.userData.drawHp = drawEnemyHp;
+            drawEnemyHp(hp, hp);
             return group;
         }
 
@@ -387,7 +609,7 @@
             const pos = player.position;
             const offset = new THREE.Vector3(0, 14, 14);
             camera.position.copy(pos.clone().add(offset));
-            camera.lookAt(pos.x, 0, pos.z);
+            camera.lookAt(pos.x, pos.y, pos.z);
         }
         updateCamera();
 
@@ -398,9 +620,10 @@
         document.addEventListener('keydown', (e) => {
             const key = e.key.toLowerCase();
             if (key === 'w' || key === 'a' || key === 's' || key === 'd') keys[key] = true;
-            if (key === ' ' && state.isPlaying && !state.isGameOver) {
+            if (key === ' ' && state.isPlaying && !state.isGameOver && !state.isJumping) {
                 e.preventDefault();
-                shoot();
+                state.isJumping = true;
+                state.jumpVelocity = 10;
             }
         });
         document.addEventListener('keyup', (e) => {
@@ -408,14 +631,31 @@
             if (key === 'w' || key === 'a' || key === 's' || key === 'd') keys[key] = false;
         });
 
+        // 射线投射器，用于精确计算鼠标指向地面的位置
+        const raycaster = new THREE.Raycaster();
+        const mouseNDC = new THREE.Vector2();
+        const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0.5);
+
+        // 根据鼠标位置计算玩家朝向
+        function updatePlayerAim(e) {
+            if (!state.isPlaying || state.isGameOver) return;
+            mouseNDC.x = (e.clientX / window.innerWidth) * 2 - 1;
+            mouseNDC.y = -(e.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouseNDC, camera);
+            const intersectPoint = new THREE.Vector3();
+            raycaster.ray.intersectPlane(groundPlane, intersectPoint);
+            if (intersectPoint) {
+                const dir = intersectPoint.clone().sub(player.position);
+                dir.y = 0;
+                if (dir.length() > 0.1) {
+                    player.rotation.y = Math.atan2(dir.x, dir.z);
+                }
+            }
+        }
+
         // 鼠标移动控制视角
         document.addEventListener('mousemove', (e) => {
-            if (!state.isPlaying || state.isGameOver) return;
-            mouseX = (e.clientX / window.innerWidth) * 2 - 1;
-            mouseY = -(e.clientY / window.innerHeight) * 2 + 1;
-            // 玩家旋转 - 现在使用鼠标控制
-            const angle = mouseX * Math.PI * 0.6;
-            player.rotation.y = angle;
+            updatePlayerAim(e);
         });
 
         document.addEventListener('mousedown', (e) => {
@@ -424,48 +664,145 @@
             }
         });
 
-        // --- 修复射击方向 ---
+        // --- 修复射击方向（基于鼠标射线指向） ---
         function shoot() {
             if (!state.isPlaying || state.isGameOver) return;
-            
-            // 获取玩家的朝向（Z轴正方向为前方）
-            const forward = new THREE.Vector3(0, 0, 1);
-            forward.applyQuaternion(player.quaternion);
-            forward.normalize();
-            
-            // 子弹起始位置（从枪口位置发射）
-            const startPos = player.position.clone();
-            startPos.y += 0.8;
-            // 稍微向前偏移
-            startPos.add(forward.clone().multiplyScalar(0.8));
-            
-            const bullet = createBullet(startPos, forward);
+
+            // 子弹起始位置（从枪口世界坐标发射）
+            const gunTipLocal = new THREE.Vector3(0.5, 0.7, 1.45);
+            const gunTipWorld = gunTipLocal.applyMatrix4(player.matrixWorld);
+
+            // 用射线投射获取鼠标指向的地面点
+            raycaster.setFromCamera(mouseNDC, camera);
+            const intersectPoint = new THREE.Vector3();
+            raycaster.ray.intersectPlane(groundPlane, intersectPoint);
+
+            let shootDir;
+            if (intersectPoint) {
+                // 从枪口位置指向鼠标地面点
+                shootDir = intersectPoint.clone().sub(gunTipWorld);
+                shootDir.y = 0;
+                shootDir.normalize();
+            } else {
+                // 回退：使用玩家朝向
+                shootDir = new THREE.Vector3(0, 0, 1).applyQuaternion(player.quaternion);
+                shootDir.y = 0;
+                shootDir.normalize();
+            }
+
+            const bullet = createBullet(gunTipWorld, shootDir);
             scene.add(bullet);
             state.bullets.push(bullet);
         }
 
         // --- 游戏逻辑函数 ---
+        // --- 敌人预警颜色 ---
+        const ENEMY_WARNING_COLORS = { red: 0xff5555, blue: 0x4488ff, purple: 0xaa44ff };
+
         function spawnEnemy() {
             if (!state.isPlaying || state.isGameOver) return;
-            const enemy = createEnemy();
-            scene.add(enemy);
-            state.enemies.push(enemy);
+            const r = Math.random();
+            let type;
+            if (r < 0.35) type = 'blue';
+            else if (r < 0.6) type = 'purple';
+            else type = 'red';
+
+            const angle = Math.random() * Math.PI * 2;
+            const radius = 15 + Math.random() * 20;
+            const x = Math.cos(angle) * radius;
+            const z = Math.sin(angle) * radius;
+
+            // 地面预警圆圈
+            const warnGeo = new THREE.RingGeometry(0.3, 1.2, 24);
+            const warnMat = new THREE.MeshBasicMaterial({
+                color: ENEMY_WARNING_COLORS[type],
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: 0.7,
+                depthTest: false
+            });
+            const warnMesh = new THREE.Mesh(warnGeo, warnMat);
+            warnMesh.rotation.x = -Math.PI / 2;
+            warnMesh.position.set(x, 0.01, z);
+            warnMesh.renderOrder = 998;
+            scene.add(warnMesh);
+
+            state.spawnWarnings.push({ mesh: warnMesh, type: type, x: x, z: z, timer: 1.0 });
+        }
+
+        function updateSpawnWarnings(delta) {
+            for (let i = state.spawnWarnings.length - 1; i >= 0; i--) {
+                const w = state.spawnWarnings[i];
+                w.timer -= delta;
+                // 闪烁效果：最后0.3秒加快闪烁
+                const speed = w.timer < 0.3 ? 15 : 5;
+                w.mesh.material.opacity = 0.3 + 0.4 * Math.abs(Math.sin(Date.now() * 0.001 * speed));
+                // 缩放动画
+                const progress = 1 - w.timer;
+                const scale = 0.5 + progress * 0.5;
+                w.mesh.scale.set(scale, scale, 1);
+
+                if (w.timer <= 0) {
+                    // 生成敌人
+                    const enemy = createEnemy(w.type);
+                    enemy.position.set(w.x, 0, w.z);
+                    enemy.rotation.y = Math.random() * Math.PI * 2;
+                    scene.add(enemy);
+                    state.enemies.push(enemy);
+                    // 移除预警
+                    scene.remove(w.mesh);
+                    state.spawnWarnings.splice(i, 1);
+                }
+            }
+        }
+
+        // AABB碰撞检测：角色半径margin，障碍物半宽hw/hd
+        const PLAYER_MARGIN = 0.5;
+        const ENEMY_MARGIN = 0.4;
+
+        function hitsObstacle(px, pz, margin) {
+            for (const obs of obstacles) {
+                if (Math.abs(px - obs.x) < obs.hw + margin && Math.abs(pz - obs.z) < obs.hd + margin) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         function updateEnemies(delta) {
-            const speed = state.enemySpeed;
             const playerPos = state.player.position;
 
             for (let i = state.enemies.length - 1; i >= 0; i--) {
                 const enemy = state.enemies[i];
+                const speed = state.enemySpeed * (enemy.userData.speedMul || 1.0);
                 const dir = new THREE.Vector3().copy(playerPos).sub(enemy.position);
                 dir.y = 0;
                 const dist = dir.length();
                 if (dist > 0.5) {
                     dir.normalize();
-                    enemy.position.add(dir.multiplyScalar(speed * delta));
+                    const moveVec = dir.clone().multiplyScalar(speed * delta);
+                    const nextX = enemy.position.x + moveVec.x;
+                    const nextZ = enemy.position.z + moveVec.z;
+
+                    // AABB碰撞检测，分别检测X和Z方向
+                    let canMoveX = !hitsObstacle(nextX, enemy.position.z, ENEMY_MARGIN);
+                    let canMoveZ = !hitsObstacle(enemy.position.x, nextZ, ENEMY_MARGIN);
+
+                    if (canMoveX) enemy.position.x = nextX;
+                    if (canMoveZ) enemy.position.z = nextZ;
+
+                    // 如果两个方向都被挡住，尝试绕行（侧移）
+                    if (!canMoveX && !canMoveZ) {
+                        const side = new THREE.Vector3(-dir.z, 0, dir.x).multiplyScalar(speed * delta);
+                        const sideX = enemy.position.x + side.x;
+                        const sideZ = enemy.position.z + side.z;
+                        if (!hitsObstacle(sideX, enemy.position.z, ENEMY_MARGIN)) enemy.position.x = sideX;
+                        else if (!hitsObstacle(enemy.position.x, sideZ, ENEMY_MARGIN)) enemy.position.z = sideZ;
+                    }
                 }
-                const angle = Math.atan2(dir.x, dir.z);
+                const lookDir = new THREE.Vector3().copy(playerPos).sub(enemy.position);
+                lookDir.y = 0;
+                const angle = Math.atan2(lookDir.x, lookDir.z);
                 enemy.rotation.y = angle;
 
                 if (dist < 1.2) {
@@ -486,17 +823,77 @@
                     const ePos = enemy.position;
                     const dx = bPos.x - ePos.x;
                     const dz = bPos.z - ePos.z;
-                    if (dx*dx + dz*dz < 1.0 && Math.abs(bPos.y - ePos.y) < 1.0) {
+                    if (dx*dx + dz*dz < 1.0) {
                         scene.remove(bullet);
                         state.bullets.splice(j, 1);
-                        scene.remove(enemy);
-                        state.enemies.splice(i, 1);
-                        state.score += 1;
-                        killDisplay.textContent = state.score;
-                        state.health = Math.min(state.maxHealth, state.health + 8);
-                        updateHealthUI();
+                        // 扣血
+                        enemy.userData.hp -= 1;
+                        enemy.userData.drawHp(enemy.userData.hp, enemy.userData.maxHp);
+
+                        if (enemy.userData.hp <= 0) {
+                            // 随机掉落血包（30%概率）
+                            if (Math.random() < 0.3) {
+                                spawnHealthPack(enemy.position.x, enemy.position.z);
+                            }
+                            scene.remove(enemy);
+                            state.enemies.splice(i, 1);
+                            state.score += 1;
+                            killDisplay.textContent = state.score;
+                        }
                         break;
                     }
+                }
+            }
+        }
+
+        // --- 血包系统 ---
+        function spawnHealthPack(x, z) {
+            const group = new THREE.Group();
+            // 十字形血包
+            const packMat = new THREE.MeshStandardMaterial({ color: 0x44ff44, emissive: 0x22aa22, emissiveIntensity: 0.4 });
+            // 横条
+            const hBar = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.25, 0.25), packMat);
+            hBar.position.y = 0.4;
+            group.add(hBar);
+            // 竖条
+            const vBar = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.25, 0.8), packMat);
+            vBar.position.y = 0.4;
+            group.add(vBar);
+            // 底座
+            const baseMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xaaaaaa, emissiveIntensity: 0.2 });
+            const base = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.15, 8), baseMat);
+            base.position.y = 0.15;
+            group.add(base);
+
+            group.position.set(x, 0, z);
+            group.userData.life = 15; // 15秒后消失
+            scene.add(group);
+            state.healthPacks.push(group);
+        }
+
+        function updateHealthPacks(delta) {
+            const playerPos = state.player.position;
+            for (let i = state.healthPacks.length - 1; i >= 0; i--) {
+                const pack = state.healthPacks[i];
+                // 旋转动画
+                pack.rotation.y += 2 * delta;
+                // 上下浮动
+                pack.position.y = 0.1 + Math.sin(Date.now() * 0.003) * 0.15;
+                // 拾取检测
+                const dx = playerPos.x - pack.position.x;
+                const dz = playerPos.z - pack.position.z;
+                if (dx * dx + dz * dz < 1.5) {
+                    state.health = Math.min(state.maxHealth, state.health + 25);
+                    updateHealthUI();
+                    scene.remove(pack);
+                    state.healthPacks.splice(i, 1);
+                    continue;
+                }
+                // 超时消失
+                pack.userData.life -= delta;
+                if (pack.userData.life <= 0) {
+                    scene.remove(pack);
+                    state.healthPacks.splice(i, 1);
                 }
             }
         }
@@ -506,7 +903,18 @@
                 const bullet = state.bullets[i];
                 bullet.position.add(bullet.userData.velocity.clone().multiplyScalar(delta));
                 bullet.userData.life -= delta;
-                if (bullet.userData.life <= 0 || Math.abs(bullet.position.x) > 22 || Math.abs(bullet.position.z) > 22) {
+                let remove = bullet.userData.life <= 0 || Math.abs(bullet.position.x) > HALF || Math.abs(bullet.position.z) > HALF;
+                // 障碍物碰撞
+                if (!remove) {
+                    const bx = bullet.position.x, bz = bullet.position.z;
+                    for (const obs of obstacles) {
+                        if (Math.abs(bx - obs.x) < obs.hw + 0.15 && Math.abs(bz - obs.z) < obs.hd + 0.15) {
+                            remove = true;
+                            break;
+                        }
+                    }
+                }
+                if (remove) {
                     scene.remove(bullet);
                     state.bullets.splice(i, 1);
                 }
@@ -541,6 +949,10 @@
             state.enemies = [];
             state.bullets.forEach(b => scene.remove(b));
             state.bullets = [];
+            state.healthPacks.forEach(p => scene.remove(p));
+            state.healthPacks = [];
+            state.spawnWarnings.forEach(w => scene.remove(w.mesh));
+            state.spawnWarnings = [];
             state.score = 0;
             state.survivalTime = 0;
             state.health = state.maxHealth;
@@ -551,6 +963,8 @@
             timerDisplay.textContent = '00:00';
             updateHealthUI();
             player.position.set(0, 0, 0);
+            state.isJumping = false;
+            state.jumpVelocity = 0;
             updateCamera();
             overlay.classList.remove('hidden');
             statusTitle.textContent = '🔄 重新开始';
@@ -590,6 +1004,21 @@
         });
 
         // 窗口自适应
+        // 全屏切换
+        const fullscreenBtn = document.getElementById('fullscreenBtn');
+        fullscreenBtn.addEventListener('click', () => {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen();
+                fullscreenBtn.textContent = '退出全屏';
+            } else {
+                document.exitFullscreen();
+                fullscreenBtn.textContent = '全屏';
+            }
+        });
+        document.addEventListener('fullscreenchange', () => {
+            fullscreenBtn.textContent = document.fullscreenElement ? '退出全屏' : '全屏';
+        });
+
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
@@ -608,21 +1037,39 @@
                 state.survivalTime += delta;
                 timerDisplay.textContent = formatTime(state.survivalTime);
 
-                // 玩家移动
+                // 玩家移动（基于屏幕方向，非玩家朝向）
                 const moveSpeed = 5.5;
-                const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(player.quaternion);
-                const right = new THREE.Vector3(1, 0, 0).applyQuaternion(player.quaternion);
                 const moveDir = new THREE.Vector3(0, 0, 0);
-                if (keys.w) moveDir.add(forward);
-                if (keys.s) moveDir.sub(forward);
-                if (keys.a) moveDir.sub(right);
-                if (keys.d) moveDir.add(right);
+                if (keys.w) moveDir.z -= 1;
+                if (keys.s) moveDir.z += 1;
+                if (keys.a) moveDir.x -= 1;
+                if (keys.d) moveDir.x += 1;
                 if (moveDir.length() > 0) {
                     moveDir.normalize().multiplyScalar(moveSpeed * delta);
-                    player.position.add(moveDir);
-                    const limit = 18;
+                    const nextX = player.position.x + moveDir.x;
+                    const nextZ = player.position.z + moveDir.z;
+
+                    // AABB碰撞检测，分别判断X和Z方向
+                    let canMoveX = !hitsObstacle(nextX, player.position.z, PLAYER_MARGIN);
+                    let canMoveZ = !hitsObstacle(player.position.x, nextZ, PLAYER_MARGIN);
+
+                    if (canMoveX) player.position.x = nextX;
+                    if (canMoveZ) player.position.z = nextZ;
+
+                    const limit = HALF - 1;
                     player.position.x = Math.max(-limit, Math.min(limit, player.position.x));
                     player.position.z = Math.max(-limit, Math.min(limit, player.position.z));
+                }
+
+                // 跳跃物理
+                if (state.isJumping) {
+                    state.jumpVelocity -= 25 * delta;
+                    player.position.y += state.jumpVelocity * delta;
+                    if (player.position.y <= 0) {
+                        player.position.y = 0;
+                        state.isJumping = false;
+                        state.jumpVelocity = 0;
+                    }
                 }
 
                 updateCamera();
@@ -638,6 +1085,8 @@
                 }
 
                 updateEnemies(delta);
+                updateHealthPacks(delta);
+                updateSpawnWarnings(delta);
                 updateBullets(delta);
 
                 if (state.health <= 0) {
@@ -655,7 +1104,7 @@
         animate();
 
         console.log('🎮 3D第三人称俯视射击生存游戏已启动！');
-        console.log('WASD移动 | 鼠标旋转视角 | 左键/空格射击');
+        console.log('WASD移动 | 空格跳跃 | 鼠标旋转视角 | 左键射击');
     </script>
 </body>
 </html>
